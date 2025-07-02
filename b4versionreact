@@ -1,0 +1,406 @@
+import React, { useState, useEffect, useRef } from 'react';
+import * as d3 from 'd3';
+import { Search, Users, AlertCircle, Loader2 } from 'lucide-react';
+
+const SocialGraphApp = () => {
+  const [userId, setUserId] = useState('');
+  const [graphData, setGraphData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [currentRootId, setCurrentRootId] = useState(null);
+  const [hoveredUser, setHoveredUser] = useState(null);
+  const [hoverPosition, setHoverPosition] = useState({ x: 0, y: 0 });
+  const svgRef = useRef();
+
+  const fetchGraphData = async (id, depth = 3) => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      const response = await fetch(`http://localhost:8080/graph/${id}?depth=${depth}`);
+      if (!response.ok) {
+        throw new Error(response.status === 404 ? 'User not found' : 'Failed to fetch graph data');
+      }
+      console.log(response)
+      const data = await response.json();
+      console.log(data)
+      setGraphData(data);
+      setCurrentRootId(parseInt(id));
+    } catch (err) {
+      setError(err.message);
+      setGraphData(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (userId.trim()) {
+      fetchGraphData(userId.trim());
+    }
+  };
+
+  const handleNodeClick = (nodeId) => {
+    if (nodeId !== currentRootId) {
+      fetchGraphData(nodeId.toString());
+    }
+  };
+
+  const calculateNodeDepths = (nodes, edges, rootId) => {
+    const depths = new Map();
+    const visited = new Set();
+    const queue = [{ id: rootId, depth: 0 }];
+    
+    depths.set(rootId, 0);
+    visited.add(rootId);
+
+    // Build adjacency list
+    const adjacency = new Map();
+    nodes.forEach(node => adjacency.set(node.id, []));
+    edges.forEach(edge => {
+      adjacency.get(edge.source).push(edge.target);
+      adjacency.get(edge.target).push(edge.source);
+    });
+
+    while (queue.length > 0) {
+      const { id, depth } = queue.shift();
+      const neighbors = adjacency.get(id) || [];
+      
+      neighbors.forEach(neighborId => {
+        if (!visited.has(neighborId)) {
+          visited.add(neighborId);
+          depths.set(neighborId, depth + 1);
+          queue.push({ id: neighborId, depth: depth + 1 });
+        }
+      });
+    }
+
+    return depths;
+  };
+
+  const getNodeColor = (depth) => {
+    const colors = [
+      '#3B82F6', // blue-500 - root
+      '#10B981', // emerald-500 - depth 1
+      '#F59E0B', // amber-500 - depth 2
+      '#EF4444', // red-500 - depth 3
+      '#8B5CF6', // violet-500 - depth 4+
+    ];
+    return colors[Math.min(depth, colors.length - 1)];
+  };
+
+  useEffect(() => {
+    if (!graphData || !graphData.nodes.length) return;
+
+    const svg = d3.select(svgRef.current);
+    svg.selectAll("*").remove();
+
+    const width = 800;
+    const height = 600;
+    const margin = 20;
+
+    svg.attr('width', width).attr('height', height);
+
+    const nodeDepths = calculateNodeDepths(graphData.nodes, graphData.edges, currentRootId);
+
+    // Create force simulation
+    const simulation = d3.forceSimulation(graphData.nodes)
+      .force('link', d3.forceLink(graphData.edges).id(d => d.id).distance(80))
+      .force('charge', d3.forceManyBody().strength(-300))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collision', d3.forceCollide().radius(25));
+
+    // Create links
+    const link = svg.append('g')
+      .selectAll('line')
+      .data(graphData.edges)
+      .enter().append('line')
+      .attr('stroke', '#E5E7EB')
+      .attr('stroke-width', 2)
+      .attr('stroke-opacity', 0.6);
+
+    // Create node groups
+    const nodeGroup = svg.append('g')
+      .selectAll('g')
+      .data(graphData.nodes)
+      .enter().append('g')
+      .style('cursor', 'pointer')
+      .call(d3.drag()
+        .on('start', dragstarted)
+        .on('drag', dragged)
+        .on('end', dragended));
+
+    // Add circles with border
+    const circles = nodeGroup.append('circle')
+      .attr('r', d => d.id === currentRootId ? 22 : 18)
+      .attr('fill', d => getNodeColor(nodeDepths.get(d.id) || 0))
+      .attr('stroke', '#FFFFFF')
+      .attr('stroke-width', d => d.id === currentRootId ? 3 : 2)
+      .on('click', (event, d) => {
+        event.stopPropagation();
+        handleNodeClick(d.id);
+      });
+
+    // Add avatar images
+    const avatars = nodeGroup.append('clipPath')
+      .attr('id', d => `clip-${d.id}`)
+      .append('circle')
+      .attr('r', d => d.id === currentRootId ? 18 : 14);
+
+    nodeGroup.append('image')
+      .attr('x', d => d.id === currentRootId ? -18 : -14)
+      .attr('y', d => d.id === currentRootId ? -18 : -14)
+      .attr('width', d => d.id === currentRootId ? 36 : 28)
+      .attr('height', d => d.id === currentRootId ? 36 : 28)
+      .attr('clip-path', d => `url(#clip-${d.id})`)
+      .attr('href', d => d.avatarUrl || `data:image/svg+xml;base64,${btoa(`
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white">
+          <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+        </svg>
+      `)}`)
+      .style('pointer-events', 'none');
+
+    // Add username labels below nodes
+    const labels = nodeGroup.append('text')
+      .attr('text-anchor', 'middle')
+      .attr('dy', d => d.id === currentRootId ? '35px' : '30px')
+      .attr('font-size', d => d.id === currentRootId ? '12px' : '10px')
+      .attr('font-weight', d => d.id === currentRootId ? 'bold' : 'normal')
+      .attr('fill', '#FFFFFF')
+      .attr('stroke', '#000000')
+      .attr('stroke-width', '0.5px')
+      .text(d => d.username.length > 10 ? d.username.substring(0, 10) + '...' : d.username)
+      .style('pointer-events', 'none');
+
+    // Add hover effects
+    nodeGroup
+      .on('mouseover', function(event, d) {
+        d3.select(this).select('circle')
+          .transition().duration(200)
+          .attr('r', d.id === currentRootId ? 24 : 20);
+        
+        // Show user card
+        setHoveredUser(d);
+        setHoverPosition({ x: event.pageX, y: event.pageY });
+      })
+      .on('mousemove', function(event, d) {
+        setHoverPosition({ x: event.pageX, y: event.pageY });
+      })
+      .on('mouseout', function(event, d) {
+        d3.select(this).select('circle')
+          .transition().duration(200)
+          .attr('r', d.id === currentRootId ? 22 : 18);
+        
+        // Hide user card
+        setHoveredUser(null);
+      });
+
+    function dragstarted(event, d) {
+      if (!event.active) simulation.alphaTarget(0.3).restart();
+      d.fx = d.x;
+      d.fy = d.y;
+    }
+
+    function dragged(event, d) {
+      d.fx = event.x;
+      d.fy = event.y;
+    }
+
+    function dragended(event, d) {
+      if (!event.active) simulation.alphaTarget(0);
+      d.fx = null;
+      d.fy = null;
+    }
+
+    simulation.on('tick', () => {
+      link
+        .attr('x1', d => d.source.x)
+        .attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x)
+        .attr('y2', d => d.target.y);
+
+      nodeGroup
+        .attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+
+    return () => {
+      simulation.stop();
+    };
+  }, [graphData, currentRootId]);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      <div className="container mx-auto px-4 py-8">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <div className="flex items-center justify-center gap-3 mb-4">
+            <Users className="w-8 h-8 text-blue-400" />
+            <h1 className="text-4xl font-bold text-white">Social Graph Visualizer</h1>
+          </div>
+          <p className="text-slate-300 text-lg">Explore social connections and network relationships</p>
+        </div>
+
+        {/* Search Form */}
+        <div className="max-w-md mx-auto mb-8">
+          <div className="relative">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-5 h-5" />
+              <input
+                type="text"
+                value={userId}
+                onChange={(e) => setUserId(e.target.value)}
+                placeholder="Enter User ID"
+                className="w-full pl-10 pr-4 py-3 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                disabled={loading}
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter' && userId.trim()) {
+                    handleSubmit(e);
+                  }
+                }}
+              />
+            </div>
+            <button
+              onClick={handleSubmit}
+              disabled={loading || !userId.trim()}
+              className="w-full mt-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Loading...
+                </>
+              ) : (
+                <>
+                  <Search className="w-5 h-5" />
+                  Visualize Graph
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Error Message */}
+        {error && (
+          <div className="max-w-md mx-auto mb-8">
+            <div className="bg-red-900/50 border border-red-700 rounded-lg p-4 flex items-center gap-3">
+              <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+              <p className="text-red-200">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Graph Visualization */}
+        {graphData && (
+          <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700 p-6">
+            <div className="mb-4">
+              <h2 className="text-2xl font-semibold text-white mb-2">
+                Network for User ID: {currentRootId}
+              </h2>
+              <div className="flex flex-wrap gap-4 text-sm">
+                <div className="text-slate-300">
+                  <span className="font-medium">{graphData.nodes.length}</span> nodes
+                </div>
+                <div className="text-slate-300">
+                  <span className="font-medium">{graphData.edges.length}</span> connections
+                </div>
+              </div>
+            </div>
+
+            {/* Legend */}
+            <div className="mb-4 flex flex-wrap gap-4">
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-blue-500"></div>
+                <span className="text-slate-300 text-sm">Root User</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-emerald-500"></div>
+                <span className="text-slate-300 text-sm">Depth 1</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-amber-500"></div>
+                <span className="text-slate-300 text-sm">Depth 2</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-red-500"></div>
+                <span className="text-slate-300 text-sm">Depth 3+</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/50 rounded-lg p-4 overflow-hidden relative">
+              <svg ref={svgRef} className="w-full h-auto max-w-full"></svg>
+              
+              {/* User Hover Card */}
+              {hoveredUser && (
+                <div
+                  className="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg p-4 shadow-xl max-w-sm pointer-events-none"
+                  style={{
+                    left: hoverPosition.x + 10,
+                    top: hoverPosition.y - 10,
+                    transform: 'translateY(-100%)'
+                  }}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0">
+                      <img
+                        src={hoveredUser.avatarUrl || `data:image/svg+xml;base64,${btoa(`
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#94a3b8">
+                            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                          </svg>
+                        `)}`}
+                        alt={hoveredUser.username}
+                        className="w-12 h-12 rounded-full object-cover bg-slate-700"
+                        onError={(e) => {
+                          e.target.src = `data:image/svg+xml;base64,${btoa(`
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#94a3b8">
+                              <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                            </svg>
+                          `)}`;
+                        }}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-white font-semibold text-sm truncate">
+                        {hoveredUser.full_name || hoveredUser.username}
+                      </h3>
+                      <p className="text-slate-300 text-xs truncate">@{hoveredUser.username}</p>
+                      <p className="text-slate-400 text-xs truncate mt-1">{hoveredUser.email}</p>
+                      <div className="mt-2 text-xs">
+                        <span className="text-slate-500">User ID: </span>
+                        <span className="text-slate-300">{hoveredUser.id}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 text-center">
+              <p className="text-slate-400 text-sm">
+                Hover over nodes to see user details • Click on any node to explore their network • Drag nodes to rearrange
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Instructions */}
+        {!graphData && !loading && (
+          <div className="max-w-2xl mx-auto text-center">
+            <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700 p-8">
+              <Users className="w-16 h-16 text-slate-400 mx-auto mb-4" />
+              <h3 className="text-xl font-semibold text-white mb-4">Get Started</h3>
+              <div className="text-slate-300 space-y-2">
+                <p>Enter a User ID above to visualize their social network</p>
+                <p className="text-sm">• Nodes are colored by distance from the root user</p>
+                <p className="text-sm">• Click any node to explore their connections</p>
+                <p className="text-sm">• Drag nodes to rearrange the layout</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default SocialGraphApp;

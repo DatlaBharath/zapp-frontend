@@ -1,0 +1,346 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import * as d3 from 'd3';
+import { Search, Users, AlertCircle, Loader2, X } from 'lucide-react';
+
+const SocialGraphApp = () => {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [graphData, setGraphData] = useState(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const [currentRootId, setCurrentRootId] = useState(null);
+  const [hoveredUser, setHoveredUser] = useState(null);
+  const [hoverPosition, setHoverPosition] = useState({ x: 0, y: 0 });
+  const svgRef = useRef();
+  const searchRef = useRef(null);
+  const currentUserId = 1; // Replace with actual logged-in user ID from auth context
+
+  // Fetch graph data for a user
+  const fetchGraphData = async (id, depth = 3) => {
+    setGraphLoading(true);
+    setGraphError('');
+    
+    try {
+      const response = await fetch(`http://localhost:8080/graph/${id}?depth=${depth}`);
+      if (!response.ok) {
+        throw new Error(response.status === 404 ? 'User not found' : 'Failed to fetch graph data');
+      }
+      const data = await response.json();
+      setGraphData(data);
+      setCurrentRootId(parseInt(id));
+    } catch (err) {
+      setGraphError(err.message);
+      setGraphData(null);
+    } finally {
+      setGraphLoading(false);
+    }
+  };
+
+  // Search users by prefix with debounce
+  const searchUsers = useCallback(async (prefix) => {
+    if (!prefix || prefix.length < 1) {
+      setSearchResults([]);
+      return;
+    }
+    
+    setSearchLoading(true);
+    setSearchError('');
+    
+    try {
+      const response = await fetch(
+        `http://localhost:8080/6/search?prefix=${prefix}`
+      );
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch search results');
+      }
+      
+      const data = await response.json();
+      setSearchResults(data);
+    } catch (err) {
+      setSearchError(err.message);
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [currentUserId]);
+
+  // Debounce search function
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      if (searchQuery.trim()) {
+        searchUsers(searchQuery.trim());
+      } else {
+        setSearchResults([]);
+      }
+    }, 300);
+    
+    return () => clearTimeout(handler);
+  }, [searchQuery, searchUsers]);
+
+  // Close search results when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (searchRef.current && !searchRef.current.contains(e.target)) {
+        setSearchResults([]);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSelectUser = (user) => {
+    setSearchQuery('');
+    setSearchResults([]);
+    fetchGraphData(user.id.toString());
+  };
+
+  const calculateNodeDepths = (nodes, edges, rootId) => {
+    // ... existing implementation ...
+  };
+
+  const getNodeColor = (depth) => {
+    // ... existing implementation ...
+  };
+
+  // Render D3 graph (same as before)
+  useEffect(() => {
+    if (!graphData || !graphData.nodes.length) return;
+
+    // ... existing D3 rendering code ...
+    
+  }, [graphData, currentRootId]);
+
+  // Connection depth badge
+  const ConnectionDepthBadge = ({ depth }) => {
+    if (depth === 0) return null;
+    
+    const depthLabels = {
+      1: 'Direct Connection',
+      2: '2nd Connection',
+      3: '3rd Connection'
+    };
+    
+    const depthColors = {
+      1: 'bg-emerald-500',
+      2: 'bg-amber-500',
+      3: 'bg-red-500'
+    };
+    
+    return (
+      <span className={`${depthColors[depth]} text-white text-xs px-2 py-1 rounded-full ml-2`}>
+        {depthLabels[depth] || `${depth} connections away`}
+      </span>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      <div className="container mx-auto px-4 py-8">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <div className="flex items-center justify-center gap-3 mb-4">
+            <Users className="w-8 h-8 text-blue-400" />
+            <h1 className="text-4xl font-bold text-white">Social Graph Visualizer</h1>
+          </div>
+          <p className="text-slate-300 text-lg">Explore social connections and network relationships</p>
+        </div>
+
+        {/* Search Section */}
+        <div className="max-w-xl mx-auto mb-8 relative" ref={searchRef}>
+          <div className="relative">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-5 h-5" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search users by name..."
+                className="w-full pl-10 pr-10 py-3 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                disabled={graphLoading}
+              />
+              {searchQuery && (
+                <button 
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              )}
+            </div>
+            
+            {/* Search Results Dropdown */}
+            {searchResults.length > 0 && (
+              <div className="absolute z-10 w-full mt-2 bg-slate-800 border border-slate-700 rounded-lg shadow-lg overflow-hidden">
+                <div className="max-h-96 overflow-y-auto">
+                  {searchResults.map((user) => (
+                    <div 
+                      key={user.id}
+                      className="p-3 hover:bg-slate-700/50 cursor-pointer transition-colors flex items-center border-b border-slate-700 last:border-b-0"
+                      onClick={() => handleSelectUser(user)}
+                    >
+                      <img 
+                        src={user.avatarUrl || `data:image/svg+xml;base64,${btoa(`
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#94a3b8">
+                            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                          </svg>
+                        `)}`}
+                        alt={user.username}
+                        className="w-10 h-10 rounded-full object-cover bg-slate-700 mr-3"
+                        onError={(e) => {
+                          e.target.src = `data:image/svg+xml;base64,${btoa(`
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#94a3b8">
+                              <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                            </svg>
+                          `)}`;
+                        }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center">
+                          <h3 className="text-white font-medium truncate">
+                            {user.fullName || user.username}
+                          </h3>
+                          <ConnectionDepthBadge depth={user.connectionDepth} />
+                        </div>
+                        <p className="text-slate-400 text-sm truncate">@{user.username}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {/* Search Loading */}
+            {searchLoading && (
+              <div className="absolute inset-x-0 bottom-0 translate-y-full mt-1 bg-slate-800 border border-slate-700 rounded-lg p-4 flex justify-center">
+                <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+              </div>
+            )}
+            
+            {/* Search Error */}
+            {searchError && (
+              <div className="absolute inset-x-0 bottom-0 translate-y-full mt-1 bg-red-900/50 border border-red-700 rounded-lg p-3 flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                <p className="text-red-200 text-sm">{searchError}</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Graph Error Message */}
+        {graphError && (
+          <div className="max-w-xl mx-auto mb-8">
+            <div className="bg-red-900/50 border border-red-700 rounded-lg p-4 flex items-center gap-3">
+              <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+              <p className="text-red-200">{graphError}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Graph Visualization */}
+        {graphData && (
+          <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700 p-6">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h2 className="text-2xl font-semibold text-white mb-2">
+                  Network for {graphData.nodes.find(n => n.id === currentRootId)?.fullName || `User ${currentRootId}`}
+                </h2>
+                <div className="flex flex-wrap gap-4 text-sm">
+                  <div className="text-slate-300">
+                    <span className="font-medium">{graphData.nodes.length}</span> users
+                  </div>
+                  <div className="text-slate-300">
+                    <span className="font-medium">{graphData.edges.length}</span> connections
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setGraphData(null);
+                  setCurrentRootId(null);
+                  setSearchQuery('');
+                }}
+                className="text-slate-300 hover:text-white flex items-center gap-1 text-sm"
+              >
+                <X className="w-4 h-4" /> Clear
+              </button>
+            </div>
+
+            {/* Legend */}
+            <div className="mb-4 flex flex-wrap gap-4">
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-blue-500"></div>
+                <span className="text-slate-300 text-sm">Root User</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-emerald-500"></div>
+                <span className="text-slate-300 text-sm">Direct Connections</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-amber-500"></div>
+                <span className="text-slate-300 text-sm">2nd Connections</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-red-500"></div>
+                <span className="text-slate-300 text-sm">3rd+ Connections</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/50 rounded-lg p-4 overflow-hidden relative">
+              {graphLoading ? (
+                <div className="h-96 flex items-center justify-center">
+                  <Loader2 className="w-12 h-12 text-blue-400 animate-spin" />
+                </div>
+              ) : (
+                <>
+                  <svg ref={svgRef} className="w-full h-auto max-w-full min-h-[500px]"></svg>
+                  
+                  {/* User Hover Card */}
+                  {hoveredUser && (
+                    <div
+                      className="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg p-4 shadow-xl max-w-sm pointer-events-none"
+                      style={{
+                        left: hoverPosition.x + 10,
+                        top: hoverPosition.y - 10,
+                        transform: 'translateY(-100%)'
+                      }}
+                    >
+                      {/* ... existing hover card code ... */}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="mt-4 text-center">
+              <p className="text-slate-400 text-sm">
+                Hover over nodes to see user details • Click on any node to explore their network • Drag nodes to rearrange
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Instructions */}
+        {!graphData && !graphLoading && (
+          <div className="max-w-2xl mx-auto text-center">
+            <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700 p-8">
+              <Users className="w-16 h-16 text-slate-400 mx-auto mb-4" />
+              <h3 className="text-xl font-semibold text-white mb-4">Get Started</h3>
+              <div className="text-slate-300 space-y-2">
+                <p>Search for users by name to visualize their social network</p>
+                <p className="text-sm">• Results show connection depth to your network</p>
+                <p className="text-sm">• Click any result to explore their connections</p>
+                <p className="text-sm">• Nodes are colored by distance from the root user</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default SocialGraphApp;
